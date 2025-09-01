@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-util = { version = "0.7.16", features = ["full"] }
-rsipstack = "0.2.50"
+rsipstack = "0.2.51"
 clap = { version = "4.5.46", features = ["derive"] }
 rsip = { version = "0.4.0" }
 async-std = "1.13.2"

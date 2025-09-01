@@ -2,31 +2,37 @@ use crate::{get_first_non_loopback_interface, MediaSessionOption};
 use rsipstack::transport::udp::UdpConnection;
 use rsipstack::Result;
 use rsipstack::{transport::SipAddr, Error};
-use rtp_rs::RtpPacketBuilder;
+use rtp_rs::{RtpPacketBuilder, RtpReader};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use async_std::fs::File;
+use async_std::io::WriteExt;
+use tokio::sync::Mutex;
 
 pub async fn build_rtp_conn(
-    opt: &MediaSessionOption,
+    opt: Arc<Mutex<MediaSessionOption>>,
     ssrc: u32,
     payload_type: u8,
 ) -> Result<(UdpConnection, String)> {
     let addr = get_first_non_loopback_interface()?;
     let mut conn = None;
-
+    let rtp_start_port = opt.lock().await.rtp_start_port;
+    let external_ip = opt.lock().await.external_ip.clone();
+    let cancel_token = opt.lock().await.cancel_token.clone();
     for p in 0..100 {
-        let port = opt.rtp_start_port + p * 2;
+        let port = rtp_start_port + p * 2;
         if let Ok(c) = UdpConnection::create_connection(
             format!("{:?}:{}", addr, port).parse()?,
-            opt.external_ip
+            external_ip
                 .as_ref()
                 .map(|ip| ip.parse::<SocketAddr>().expect("Invalid external IP")),
-            Some(opt.cancel_token.clone()),
+            Some(cancel_token.clone()),
         )
-        .await
+            .await
         {
             conn = Some(c);
             break;
@@ -64,6 +70,52 @@ pub async fn build_rtp_conn(
     info!("RTP socket: {:?} {}", conn.get_addr(), sdp);
     Ok((conn, sdp))
 }
+
+pub async fn write_pcm(conn: UdpConnection, token: CancellationToken, file: &mut File) -> Result<()> {
+    select! {
+        _ = token.cancelled() => {
+            info!("RTP session cancelled");
+        }
+        _ = async {
+            let start = Instant::now();
+            loop {
+                let mut mbuf = vec![0; 1500];
+                match conn.recv_raw(&mut mbuf).await {
+                    Ok((len, _)) => {
+                        if let Ok(rtp) = RtpReader::new(&mbuf) {
+                            if rtp.payload_type() != 0 {
+                                continue;
+                            }
+                            let pcmu = rtp.payload();
+                            let dat = &pcmu[..len-12];
+                            match file.write_all(&dat).await {
+                                Ok(_) => {
+                                    let elapsed = start.elapsed();
+                                    println!("{elapsed:?}");
+                                    if 30 < elapsed.as_secs() {
+                                        info!("Hung up: {:?}", elapsed);
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    info!("Failed to write pcm: {:?}", e);
+                                }
+                            };
+                        }
+                    },
+                    Err(e) => {
+                        info!("Failed to receive RTP: {:?}", e);
+                        break;
+                    }
+                };
+            }
+        } => {
+            info!("playback finished, hangup");
+        }
+    };
+    Ok(())
+}
+
 
 pub async fn play_echo(conn: UdpConnection, token: CancellationToken) -> Result<()> {
     select! {
@@ -117,7 +169,7 @@ pub async fn play_audio_file(
             let sample_size = 160;
             let mut ticker = tokio::time::interval(Duration::from_millis(20));
             let ext = match payload_type {
-                8 => "pcma",
+                // 8 => "pcma",
                 0 => "pcmu",
                 _ => {
                     info!("Unsupported codec type: {}", payload_type);

@@ -4,7 +4,6 @@ use rsip::prelude::HeadersExt;
 use rsip::typed::MediaType;
 use rsipstack::dialog::dialog::{Dialog, DialogState, DialogStateReceiver, DialogStateSender};
 use rsipstack::dialog::dialog_layer::DialogLayer;
-use rsipstack::dialog::invitation::InviteOption;
 use rsipstack::dialog::server_dialog::ServerInviteDialog;
 use rsipstack::transaction::endpoint::EndpointInnerRef;
 use rsipstack::Result;
@@ -16,21 +15,44 @@ use rsipstack::{
 };
 use std::net::IpAddr;
 use std::{env, sync::Arc, time::Duration};
+use async_std::fs::File;
+use async_std::io::WriteExt;
+use rsip::Header;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::{select, time::sleep};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
+use std::sync::LazyLock;
 
-use crate::play_file::play_echo;
+use crate::play_file::{play_echo, write_pcm};
 mod play_file;
+mod macros;
+
+lazy_regex!(
+    RE: r"<[^:]+:(?<a>[^@]+)@.*$"
+);
+
 #[derive(Debug, Clone)]
 struct MediaSessionOption {
     pub auto_answer: bool,
     pub cancel_token: CancellationToken,
+    pub from: Option<Header>,
     pub external_ip: Option<String>,
     pub rtp_start_port: u16,
     pub echo: bool,
+    pub rec: bool,
 }
+
+impl MediaSessionOption {
+    pub fn set_header(&mut self, header: Header) {
+        self.from = Some(header);
+    }
+    pub fn get_header(&self) -> Option<Header> {
+        self.from.clone()
+    }
+}
+
 
 /// A SIP client example that sends a REGISTER request to a SIP server.
 #[derive(Parser, Debug)]
@@ -44,8 +66,13 @@ struct Args {
     #[arg(long, default_value = "5061")]
     rtp_start_port: u16,
 
+    /// echo
     #[arg(long, default_value = "false")]
     echo: bool,
+
+    /// voice record
+    #[arg(long, default_value = "false")]
+    rec: bool,
 
     /// External IP address
     #[arg(long)]
@@ -63,8 +90,8 @@ struct Args {
     #[arg(long)]
     password: Option<String>,
 
-    #[arg(long)]
-    call: Option<String>,
+    // #[arg(long)]
+    // call: Option<String>,
 
     #[arg(long)]
     reject: bool,
@@ -131,7 +158,7 @@ pub fn get_first_non_loopback_interface() -> Result<IpAddr> {
 #[tokio::main]
 async fn main() -> rsipstack::Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::TRACE)
         .with_file(true)
         .with_line_number(true)
         .with_timer(tracing_subscriber::fmt::time::LocalTime::rfc_3339())
@@ -163,13 +190,15 @@ async fn main() -> rsipstack::Result<()> {
         .unwrap_or(env::var("SIP_PASSWORD").unwrap_or_default());
 
     let token = CancellationToken::new();
-    let opt = MediaSessionOption {
+    let opt = Arc::new(Mutex::new(MediaSessionOption {
         cancel_token: token.clone(),
+        from: None,
         external_ip: args.external_ip.clone(),
         rtp_start_port: args.rtp_start_port,
         echo: args.echo,
+        rec: args.rec,
         auto_answer: args.auto_answer,
-    };
+    }));
 
     let transport_layer = TransportLayer::new(token.clone());
 
@@ -189,7 +218,7 @@ async fn main() -> rsipstack::Result<()> {
         external.clone(),
         Some(token.child_token()),
     )
-    .await?;
+        .await?;
 
     transport_layer.add_transport(connection.into());
 
@@ -233,38 +262,38 @@ async fn main() -> rsipstack::Result<()> {
         r = process_registration(endpoint.inner.clone(), sip_server, credential.clone(), token.clone()) => {
             info!("register loop finished {:?}", r);
         }
-        r = process_incoming_request(dialog_layer.clone(), incoming, state_sender.clone(), contact.clone(), args.reject) => {
+        r = process_incoming_request(dialog_layer.clone(), incoming, state_sender.clone(), contact.clone(), args.reject, opt.clone()) => {
             info!("serve loop finished {:?}", r);
         }
         r = process_dialog(dialog_layer.clone(), state_receiver, opt.clone()) => {
             info!("dialog loop finished {:?}", r);
         }
-        r = async {
-            if let Some(callee) = args.call.clone() {
-                let invite_option = InviteOption {
-                    callee: callee.try_into().expect("callee"),
-                    caller: contact.clone(),
-                    content_type: None,
-                    offer: None,
-                    contact: contact.clone(),
-                    credential: Some(credential.clone()),
-                    headers: None,
-                    destination: None,
-                };
-
-                match make_call(dialog_layer, invite_option, opt, state_sender).await {
-                    Ok(_) => info!("Call finished"),
-                    Err(e) => info!("Failed to make call: {:?}", e),
-                }
-            }
-            select! {
-                _ = token.cancelled() => {
-                    info!("token cancelled")
-                }
-            }
-        } => {
-            info!("dialog loop finished {:?}", r);
-        }
+        // r = async {
+        //     if let Some(callee) = args.call.clone() {
+        //         let invite_option = InviteOption {
+        //             callee: callee.try_into().expect("callee"),
+        //             caller: contact.clone(),
+        //             content_type: None,
+        //             offer: None,
+        //             contact: contact.clone(),
+        //             credential: Some(credential.clone()),
+        //             headers: None,
+        //             destination: None,
+        //         };
+        //
+        //         match make_call(dialog_layer, invite_option, opt, state_sender).await {
+        //             Ok(_) => info!("Call finished"),
+        //             Err(e) => info!("Failed to make call: {:?}", e),
+        //         }
+        //     }
+        //     select! {
+        //         _ = token.cancelled() => {
+        //             info!("token cancelled")
+        //         }
+        //     }
+        // } => {
+        //     info!("dialog loop finished {:?}", r);
+        // }
     }
     Ok(())
 }
@@ -300,9 +329,14 @@ async fn process_incoming_request(
     state_sender: DialogStateSender,
     contact: rsip::Uri,
     reject: bool,
+    opt: Arc<Mutex<MediaSessionOption>>,
 ) -> Result<()> {
     while let Some(mut tx) = incoming.recv().await {
         info!("Received transaction: {:?}", tx.key);
+
+        let recv_from = tx.original.headers.iter()
+            .filter(|x| x.to_string().starts_with("From")).collect::<Vec<_>>();
+        opt.lock().await.set_header(recv_from[0].clone());
 
         match tx.original.to_header()?.tag()?.as_ref() {
             Some(_) => match dialog_layer.match_dialog(&tx.original) {
@@ -362,7 +396,7 @@ async fn process_incoming_request(
 async fn process_dialog(
     dialog_layer: Arc<DialogLayer>,
     state_receiver: DialogStateReceiver,
-    opt: MediaSessionOption,
+    opt: Arc<Mutex<MediaSessionOption>>,
 ) -> Result<()> {
     let mut state_receiver = state_receiver;
     while let Some(state) = state_receiver.recv().await {
@@ -381,7 +415,7 @@ async fn process_dialog(
                         // play example pcmu of handling incoming call
                         //
                         // [A] Ai answer, [R] Reject, [E] Play example pcmu
-                        process_invite(&opt, d).await?;
+                        process_invite(opt.clone(), d).await?;
                     }
                     Dialog::ClientInvite(_) => {
                         info!("Client invite dialog {}", id);
@@ -403,79 +437,84 @@ async fn process_dialog(
     Ok(())
 }
 
-async fn make_call(
-    dialog_layer: Arc<DialogLayer>,
-    invite_option: InviteOption,
-    media_option: MediaSessionOption,
-    state_sender: DialogStateSender,
-) -> Result<()> {
+// async fn make_call(
+//     dialog_layer: Arc<DialogLayer>,
+//     invite_option: InviteOption,
+//     media_option: Arc<Mutex<MediaSessionOption>>,
+//     state_sender: DialogStateSender,
+// ) -> Result<()> {
+//     let ssrc = rand::random::<u32>();
+//     let codec_type = 0;
+//     let (rtp_conn, offer) = build_rtp_conn(media_option, ssrc, codec_type).await?;
+//     let mut invite_option = invite_option;
+//     invite_option.offer = Some(offer.into());
+//
+//     let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
+//     let rtp_token = dialog.cancel_token().child_token();
+//     let resp = resp.ok_or(Error::Error("No response".to_string()))?;
+//
+//     if resp.status_code != rsip::StatusCode::OK {
+//         info!("Failed to make call: {:?}", resp);
+//         return Err(Error::Error("Failed to make call".to_string()));
+//     }
+//
+//     let body = String::from_utf8_lossy(resp.body()).to_string();
+//     info!("Received response: {}", resp);
+//
+//     let answer = match sdp_rs::SessionDescription::try_from(body.as_str()) {
+//         Ok(s) => s,
+//         Err(e) => {
+//             info!("Failed to parse answer SDP: {:?} {}", e, body);
+//             return Err(Error::Error("Failed to parse SDP".to_string()));
+//         }
+//     };
+//
+//     let peer_addr = match answer.connection {
+//         Some(c) => c.connection_address.base,
+//         None => {
+//             info!("No connection address in answer SDP");
+//             return Err(Error::Error(
+//                 "No connection address in answer SDP".to_string(),
+//             ));
+//         }
+//     };
+//
+//     let peer_port = answer
+//         .media_descriptions
+//         .first()
+//         .map(|m| m.media.port)
+//         .ok_or(Error::Error("No audio port in answer SDP".to_string()))?;
+//
+//     let peer_addr = format!("{}:{}", peer_addr, peer_port);
+//     let payload_type = answer
+//         .media_descriptions
+//         .first()
+//         .and_then(|m| m.media.fmt.parse::<u8>().ok())
+//         .unwrap_or(0);
+//     info!("Peer address: {} payload_type:{}", peer_addr, payload_type);
+//     play_audio_file(
+//         rtp_conn,
+//         rtp_token,
+//         ssrc,
+//         "example",
+//         0,
+//         1,
+//         peer_addr,
+//         payload_type,
+//     )
+//     .await
+//     .expect("play example file");
+//     dialog.bye().await.expect("send BYE");
+//     Ok(())
+// }
+
+async fn process_invite(opt: Arc<Mutex<MediaSessionOption>>, dialog: ServerInviteDialog) -> Result<()> {
     let ssrc = rand::random::<u32>();
-    let codec_type = 0;
-    let (rtp_conn, offer) = build_rtp_conn(&media_option, ssrc, codec_type).await?;
-    let mut invite_option = invite_option;
-    invite_option.offer = Some(offer.into());
-
-    let (dialog, resp) = dialog_layer.do_invite(invite_option, state_sender).await?;
-    let rtp_token = dialog.cancel_token().child_token();
-    let resp = resp.ok_or(Error::Error("No response".to_string()))?;
-
-    if resp.status_code != rsip::StatusCode::OK {
-        info!("Failed to make call: {:?}", resp);
-        return Err(Error::Error("Failed to make call".to_string()));
-    }
-
-    let body = String::from_utf8_lossy(resp.body()).to_string();
-    info!("Received response: {}", resp);
-
-    let answer = match sdp_rs::SessionDescription::try_from(body.as_str()) {
-        Ok(s) => s,
-        Err(e) => {
-            info!("Failed to parse answer SDP: {:?} {}", e, body);
-            return Err(Error::Error("Failed to parse SDP".to_string()));
-        }
-    };
-
-    let peer_addr = match answer.connection {
-        Some(c) => c.connection_address.base,
-        None => {
-            info!("No connection address in answer SDP");
-            return Err(Error::Error(
-                "No connection address in answer SDP".to_string(),
-            ));
-        }
-    };
-
-    let peer_port = answer
-        .media_descriptions
-        .first()
-        .map(|m| m.media.port)
-        .ok_or(Error::Error("No audio port in answer SDP".to_string()))?;
-
-    let peer_addr = format!("{}:{}", peer_addr, peer_port);
-    let payload_type = answer
-        .media_descriptions
-        .first()
-        .and_then(|m| m.media.fmt.parse::<u8>().ok())
-        .unwrap_or(0);
-    info!("Peer address: {} payload_type:{}", peer_addr, payload_type);
-    play_audio_file(
-        rtp_conn,
-        rtp_token,
-        ssrc,
-        "example",
-        0,
-        1,
-        peer_addr,
-        payload_type,
-    )
-    .await
-    .expect("play example file");
-    dialog.bye().await.expect("send BYE");
-    Ok(())
-}
-
-async fn process_invite(opt: &MediaSessionOption, dialog: ServerInviteDialog) -> Result<()> {
-    let ssrc = rand::random::<u32>();
+    println!(">>>>>>>>>>>>>>>>>>> process_invite {:?}", &opt.lock().await.get_header());
+    let caller = RE
+        .captures_iter(&opt.lock().await.get_header().unwrap().to_string())
+        .map(|cap| cap["a"].to_owned())
+        .collect::<String>();
 
     let body = String::from_utf8_lossy(dialog.initial_request().body()).to_string();
     let offer = match sdp_rs::SessionDescription::try_from(body.as_str()) {
@@ -507,10 +546,11 @@ async fn process_invite(opt: &MediaSessionOption, dialog: ServerInviteDialog) ->
         .and_then(|m| m.media.fmt.parse::<u8>().ok())
         .unwrap_or(0);
 
-    let (conn, answer) = build_rtp_conn(opt, ssrc, payload_type).await?;
+    let (conn, answer) = build_rtp_conn(opt.clone(), ssrc, payload_type).await?;
 
     let (answer_sender, mut answer_receiver) = tokio::sync::mpsc::unbounded_channel();
-    if opt.auto_answer {
+    let ans = opt.lock().await.auto_answer;
+    if ans {
         let headers = vec![rsip::typed::ContentType(MediaType::Sdp(vec![])).into()];
         dialog.accept(Some(headers), Some(answer.clone().into()))?;
         answer_sender.send("a".to_string()).expect("send answer");
@@ -526,8 +566,10 @@ async fn process_invite(opt: &MediaSessionOption, dialog: ServerInviteDialog) ->
 
     let peer_addr = format!("{}:{}", peer_addr, peer_port);
     let rtp_token = dialog.cancel_token().child_token();
-    let echo = opt.echo;
-    let answered = opt.auto_answer;
+    let lock = opt.lock().await;
+    let rec = lock.rec;
+    let echo = lock.echo;
+    let answered = lock.auto_answer;
 
     tokio::spawn(async move {
         let input_token = CancellationToken::new();
@@ -536,6 +578,8 @@ async fn process_invite(opt: &MediaSessionOption, dialog: ServerInviteDialog) ->
                 info!("user input handler finished");
             }
             _ = async {
+                let file = format!("voicemail/recv_{}_{}.pcmu", local_time(), caller);
+                let mut recv_pcm = File::create(&file).await.expect("save pcm");
                 let mut ts = 0;
                 let mut seq = 1;
                 let mut rejected = false;
@@ -594,17 +638,31 @@ async fn process_invite(opt: &MediaSessionOption, dialog: ServerInviteDialog) ->
                 }
                 if echo {
                     play_echo(conn, rtp_token).await.expect("play echo");
+                } else if rec {
+                    let aa = play_audio_file(conn.clone(), rtp_token.clone(), ssrc, "voicemail", ts, seq, peer_addr, payload_type)
+                        .await
+                        .expect("play example file");
+                    write_pcm(conn, rtp_token, &mut recv_pcm).await.expect("rec voice");
+                    recv_pcm.flush().await.expect("buf flush");
                 } else {
                     let aa = play_audio_file(conn, rtp_token, ssrc, "voicemail", ts, seq, peer_addr, payload_type)
                         .await
                         .expect("play example file");
                     println!("{aa:?}");
+                    // dialog.bye().await.expect("send BYE");
+                    // return;
                 }
             } => {
                 info!("answer receiver finished");
             }
         }
+        // sleep(Duration::from_secs(2)).await;
+
         dialog.bye().await.expect("send BYE");
     });
     Ok(())
+}
+
+fn local_time() -> String {
+    chrono::Local::now().naive_local().format("%Y%m%d%H%M%S").to_string()
 }
