@@ -1,0 +1,22 @@
+[package]
+name = "voicemail"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.44.2", features = ["full"] }
+tokio-util = { version = "0.7.16", features = ["full"] }
+rsipstack = "0.2.50"
+clap = { version = "4.5.46", features = ["derive"] }
+rsip = { version = "0.4.0" }
+async-std = "1.13.2"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["local-time"] }
+chrono = "0.4.41"
+get_if_addrs = "0.5.3"
+rand = { version = "0.9.2" }
+sdp-rs = "0.2.1"
+dotenv = "0.15"
+rtp-rs = "0.6.0"
+regex = { version = "1.11" }
+
