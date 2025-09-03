@@ -15,12 +15,12 @@ use rsipstack::{
 };
 use std::net::IpAddr;
 use std::{env, sync::Arc, time::Duration};
-use async_std::fs::File;
-use async_std::io::WriteExt;
 use rsip::Header;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::{select, time::sleep};
 use tokio::sync::Mutex;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 use std::sync::LazyLock;
