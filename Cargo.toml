@@ -20,3 +20,20 @@ dotenv = "0.15"
 rtp-rs = "0.6.0"
 regex = { version = "1.11" }
 
+rusqlite = { version = "0.32", features = ["blob"] }
+tokio-rusqlite = "0.6.0"
+uuid = { version = "0.8.2", features = ["v4"] }
+anyhow = "1.0.99"
+
+actix-web = "4"
+env_logger = "0.11"
+futures-util = { version = "0.3.17", default-features = false, features = ["std"] }
+log = "0.4"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+serde = { version = "1", features = ["derive"] }
+digest = "0.9.0"
+rustc-serialize = "0.3.25"
+md5 = "0.8.0"
+chrono-tz = "0.10.4"
+mime = "0.3.17"

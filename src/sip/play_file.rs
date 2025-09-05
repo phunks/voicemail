@@ -1,23 +1,19 @@
-use crate::{get_first_non_loopback_interface, MediaSessionOption};
-use rsipstack::transport::udp::UdpConnection;
-use rsipstack::Result;
-use rsipstack::{transport::SipAddr, Error};
-use rtp_rs::{RtpPacketBuilder, RtpReader};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::select;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use rsipstack::{transport::{SipAddr, udp::UdpConnection}, Result, Error as RsError};
+use std::{fs, net::SocketAddr, sync::Arc, time::{Duration, Instant}};
+use tokio::{select, sync::Mutex, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use rtp_rs::{RtpPacketBuilder, RtpReader};
+
+use crate::sip::{get_first_non_loopback_interface, MediaSessionOption};
+use crate::utils::local_time;
+use crate::web::db::{execute, Pool, Queries};
 
 pub async fn build_rtp_conn(
     opt: Arc<Mutex<MediaSessionOption>>,
     ssrc: u32,
     payload_type: u8,
-) -> Result<(UdpConnection, String)> {
+) -> anyhow::Result<(UdpConnection, String)> {
     let addr = get_first_non_loopback_interface()?;
     let mut conn = None;
     let rtp_start_port = opt.lock().await.rtp_start_port;
@@ -42,14 +38,14 @@ pub async fn build_rtp_conn(
     }
 
     if conn.is_none() {
-        return Err(Error::Error("Failed to bind RTP socket".to_string()));
+        return Err(anyhow::Error::from(RsError::Error("Failed to bind RTP socket".to_string())));
     }
 
     let conn = conn.unwrap();
     let codec = payload_type;
     let codec_name = match codec {
         0 => "PCMU",
-        8 => "PCMA",
+        // 8 => "PCMA",
         _ => "Unknown",
     };
     let socketaddr: SocketAddr = conn.get_addr().addr.to_owned().try_into()?;
@@ -73,15 +69,18 @@ pub async fn build_rtp_conn(
 
 pub async fn write_pcm(
     conn: UdpConnection,
+    pool: Pool,
     token: CancellationToken,
-    file: &mut File
-) -> Result<()> {
+    caller: String,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut data: Vec<u8> = vec![];
+    let id = local_time().parse::<usize>().unwrap();
     select! {
         _ = token.cancelled() => {
             info!("RTP session cancelled");
         }
         _ = async {
-            let start = Instant::now();
             loop {
                 let mut mbuf = vec![0; 1500];
                 match conn.recv_raw(&mut mbuf).await {
@@ -92,19 +91,13 @@ pub async fn write_pcm(
                             }
                             let pcmu = rtp.payload();
                             let dat = &pcmu[..len-12];
-                            match file.write_all(&dat).await {
-                                Ok(_) => {
-                                    let elapsed = start.elapsed();
-                                    println!("{elapsed:?}");
-                                    if 30 < elapsed.as_secs() {
-                                        info!("Hung up: {:?}", elapsed);
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    info!("Failed to write pcm: {:?}", e);
-                                }
-                            };
+                            data.append(&mut dat.to_vec());
+
+                            let elapsed = start.elapsed();
+                            if 30 < elapsed.as_secs() {
+                                info!("Hung up: {:?}", elapsed);
+                                break;
+                            }
                         }
                     },
                     Err(e) => {
@@ -116,8 +109,29 @@ pub async fn write_pcm(
         } => {
             info!("playback finished, hangup");
         }
-    };
+    }
+    info!("write db: {:?} {:?} {:?}", id, caller, data.len());
+    let file = format!("voicemail/recv_{}_{}.au", local_time(), caller);
+    write_file(&file, &data).await;
+    execute(&pool, Queries::InsertData(id, caller, data)).await.expect("write database");
     Ok(())
+}
+
+pub async fn write_file(file: &str, dat: &[u8]) {
+    let mut pcm = tokio::fs::File::create(file).await.expect("save pcm");
+    match pcm.write_all(dat).await {
+        Ok(_) => {
+        }
+        Err(e) => {
+            info!("Failed to write pcm: {:?}", e);
+        }
+    };
+    pcm.flush().await.expect("buf flush");
+}
+
+#[allow(unused)]
+pub fn delete_file(file: &str) {
+    fs::remove_file(file).expect("TODO: panic message");
 }
 
 
@@ -147,7 +161,7 @@ pub async fn play_echo(conn: UdpConnection, token: CancellationToken) -> Result<
         } => {
             info!("playback finished, hangup");
         }
-    };
+    }
     Ok(())
 }
 
@@ -190,7 +204,7 @@ pub async fn play_audio_file(
                 .ssrc(ssrc)
                 .sequence(seq.into())
                 .timestamp(ts)
-                .payload(&chunk)
+                .payload(chunk)
                 .build() {
                     Ok(r) => r,
                     Err(e) => {
@@ -212,6 +226,6 @@ pub async fn play_audio_file(
         } => {
             info!("playback finished, hangup");
         }
-    };
+    }
     Ok((ts, seq))
 }

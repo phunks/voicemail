@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>voicemail</title>
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+    <script src="js/g711.js"></script>
+    <script src="js/utils.js"></script>
+</head>
+<body class="bg-light">
+
+<div class="container py-5" style="width:800px">
+    <h1 class="text-center mb-4">📞voicemail</h1>
+
+    <div id="voicemail-list" class="list-group">
+        <div class="text-center text-secondary">読み込み中...</div>
+    </div>
+</div>
+
+<!-- JavaScript (AJAX) -->
+<script>
+    async function loadVoices() {
+        const listElem = document.getElementById('voicemail-list');
+        listElem.innerHTML = '<div class="text-center text-secondary">読み込み中...</div>';
+
+        try {
+            const lists = await fetch('/api/all')
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data);
+                    return data;
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                });
+
+            if (lists.length === 0) {
+                listElem.innerHTML = '<div class="text-center text-muted">着信はありません。</div>';
+                return;
+            }
+
+            listElem.innerHTML = '';
+            let n = 0;
+            lists.forEach(json => {
+                n += 1
+                const taskItem = document.createElement('div');
+                taskItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+
+                const taskNo = document.createElement('div');
+                taskNo.textContent = n;
+                taskNo.className = 'col-sm-1 text-left';
+                const taskId = document.createElement('div');
+                taskId.textContent = json.VoiceList.id;
+                taskId.className = 'd-none';
+                const taskDate = document.createElement('div');
+                taskDate.textContent = json.VoiceList.event_time;
+                taskDate.className = 'col-sm-6 text-left';
+                const taskCaller = document.createElement('div');
+                taskCaller.textContent = json.VoiceList.caller;
+                taskCaller.className = 'col-sm-3 text-right';
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn btn-sm btn-danger';
+                delBtn.textContent = '削除';
+                delBtn.onclick = () => deleteVoiceData(json.VoiceList.id);
+
+                const playBtn = document.createElement('button');
+                playBtn.className = 'btn btn-sm btn-info';
+                playBtn.textContent = '再生';
+                playBtn.onclick = () => playVoiceData(json.VoiceList.id);
+
+                taskItem.appendChild(taskNo);
+                taskItem.appendChild(taskId);
+                taskItem.appendChild(taskDate);
+                taskItem.appendChild(taskCaller);
+                taskItem.appendChild(delBtn);
+                taskItem.appendChild(playBtn);
+                listElem.appendChild(taskItem);
+            });
+
+        } catch (err) {
+            console.error('読み込みエラー:', err);
+            listElem.innerHTML = '<div class="text-danger text-center">読み込みに失敗しました。</div>';
+        }
+    }
+
+    async function deleteVoiceData(id) {
+        if (!confirm('この録音を削除しますか？')) return;
+
+        try {
+            const res = await fetch(`/api/del/${id}`, {
+                method: 'GET'
+            });
+
+            if (res.ok) {
+                await loadVoices(); // 再読み込み
+            } else {
+                alert('削除に失敗しました');
+            }
+
+        } catch (err) {
+            console.error('削除エラー:', err);
+            alert('削除に失敗しました');
+        }
+    }
+    
+    // 初期読み込み
+    loadVoices();
+</script>
+
+</body>
+</html>
