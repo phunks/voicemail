@@ -1,20 +1,23 @@
-use std::io;
-use actix_web::{middleware, get, web, App, Error as AxError, HttpResponse, HttpServer, Error};
+use actix_web::cookie::ParseError::EmptyName;
 use actix_web::error::{ErrorInternalServerError, ErrorNotFound, ParseError};
-use actix_web::http::{StatusCode};
-
-use std::path::PathBuf;
+use actix_web::http::StatusCode;
 use actix_web::http::header::{ContentDisposition, ContentType};
+use actix_web::{
+    App, Error as AcError, Error, HttpResponse, HttpServer, Result as AcResult, get, middleware,
+    web,
+};
 use anyhow::Result;
+use std::io;
+use std::path::PathBuf;
 
 pub mod db;
-use db::{Pool};
-use crate::utils::open;
-use crate::web::db::{execute, Queries};
+use crate::utils::{open, trim_null_bytes};
 use crate::web::db::DataType::Data;
+use crate::web::db::{Queries, execute};
+use db::Pool;
 
 #[get("/")]
-async fn index() -> actix_web::Result<HttpResponse> {
+async fn index() -> AcResult<HttpResponse> {
     let p = String::from("assets/web/index.html");
     let x = open(PathBuf::from(p));
     Ok(HttpResponse::build(StatusCode::OK)
@@ -22,40 +25,8 @@ async fn index() -> actix_web::Result<HttpResponse> {
         .body(x))
 }
 
-#[get("/css/{css}")]
-async fn css(path: web::Path<String>) -> actix_web::Result<HttpResponse, AxError> {
-    let css = path.into_inner();
-
-    let p = "assets/web/css/".to_owned() + &css;
-    match web::block(|| std::fs::read(PathBuf::from(p))).await {
-        Ok(css) => match css {
-            Ok(css) => Ok(HttpResponse::build(StatusCode::OK)
-                .content_type(ContentType(mime::TEXT_CSS_UTF_8))
-                .body(css)),
-            Err(e) => Err(ErrorNotFound(e)),
-        },
-        Err(e) => Err(ErrorInternalServerError(e)),
-    }
-}
-
-#[get("/js/{js}")]
-async fn js(path: web::Path<String>) -> actix_web::Result<HttpResponse, AxError> {
-    let js = path.into_inner();
-
-    let p = "assets/web/js/".to_owned() + &js;
-    match web::block(|| std::fs::read(PathBuf::from(p))).await {
-        Ok(js) => match js {
-            Ok(js) => Ok(HttpResponse::build(StatusCode::OK)
-                .content_type(ContentType(mime::APPLICATION_JAVASCRIPT_UTF_8))
-                .body(js)),
-            Err(e) => Err(ErrorNotFound(e)),
-        },
-        Err(e) => Err(ErrorInternalServerError(e)),
-    }
-}
-
 #[get("/api/all")]
-async fn voicemail_all(db: web::Data<Pool>) -> Result<HttpResponse, AxError> {
+async fn voicemail_all(db: web::Data<Pool>) -> Result<HttpResponse, AcError> {
     match execute(&db, Queries::AllVoicemail).await {
         Ok(result) => Ok(HttpResponse::Ok().json(result)),
         Err(e) => {
@@ -65,22 +36,46 @@ async fn voicemail_all(db: web::Data<Pool>) -> Result<HttpResponse, AxError> {
     }
 }
 
+#[get("/{path}/{file}")]
+async fn assets(assets: web::Path<(String, String)>) -> Result<HttpResponse, AcError> {
+    let (path, file) = assets.into_inner();
+
+    let p = format!("assets/web/{}/{}", path, file);
+    match web::block(|| std::fs::read(PathBuf::from(p))).await {
+        Ok(d) => match path {
+            s if s == "js" => Ok(HttpResponse::build(StatusCode::OK)
+                .content_type(ContentType(mime::APPLICATION_JAVASCRIPT_UTF_8))
+                .body(d?)),
+            s if s == "css" => Ok(HttpResponse::build(StatusCode::OK)
+                .content_type(ContentType(mime::TEXT_CSS_UTF_8))
+                .body(d?)),
+            _ => Err(ErrorNotFound(EmptyName)),
+        },
+        Err(e) => Err(ErrorInternalServerError(e)),
+    }
+}
+
 #[get("/api/del/{id}")]
-async fn del_voicemail(db: web::Data<Pool>, path: web::Path<String>) -> Result<HttpResponse, AxError> {
+async fn del_voicemail(
+    db: web::Data<Pool>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, AcError> {
     let id = path.into_inner().parse::<i64>().expect("delete voicemail");
     let result = execute(&db, Queries::DeleteVoicemail(id)).await?;
     Ok(HttpResponse::Ok().json(result))
 }
 
 #[get("/api/voice/{id}")]
-async fn voice_data(db: web::Data<Pool>, path: web::Path<String>) -> Result<HttpResponse, AxError> {
+async fn voice_data(db: web::Data<Pool>, path: web::Path<String>) -> Result<HttpResponse, AcError> {
     let id = path.into_inner().parse::<i64>().expect("get voice data");
     match execute(&db, Queries::VoiceData(id)).await?.first() {
         Some(Data { data }) => {
+            let d = trim_null_bytes(data);
             let cd = ContentDisposition::attachment(format!("{}.au", id));
-            Ok(HttpResponse::Ok().content_type("audio/basic")
+            Ok(HttpResponse::Ok()
+                .content_type("audio/basic")
                 .append_header(cd)
-                .body(data.clone()))
+                .body(d.to_vec()))
         }
         _ => Err(Error::from(ParseError::Incomplete)),
     }
@@ -96,14 +91,13 @@ pub async fn server(pool: Pool) -> io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .wrap(middleware::Logger::default())
             .service(index)
-            .service(css)
-            .service(js)
             .service(voicemail_all)
             .service(del_voicemail)
             .service(voice_data)
+            .service(assets)
     })
-        .bind(("127.0.0.1", 8080))?
-        .workers(2)
-        .run()
-        .await
+    .bind(("0.0.0.0", 8080))?
+    .workers(2)
+    .run()
+    .await
 }

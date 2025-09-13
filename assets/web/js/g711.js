@@ -27,7 +27,6 @@ const seg_end = new Uint16Array([
 const ulaw_to_linear = new Array(256)
 
 // 初始化ulaw表
-// ulawテーブルの初期化
 for (let i = 0; i < 256; i++) ulaw_to_linear[i] = ulaw2linear(i)
 
 function ulaw2linear(u_val) {
@@ -111,16 +110,16 @@ function ulawFromPCM(data) {
 }
 
 async function playVoiceData(id) {
-    const audioUrl = `/api/voice/${id}`; // 8KHZ 单声道 16-bit 8kHz モノラル 16ビット
+    const audioUrl = `/api/voice/${id}`; // 8KHZ 单声道 16-bit
     const res = await fetch(audioUrl);
-    const arrayBuffer = await res.arrayBuffer(); // byte array字节数组 byte array バイト配列
+    const arrayBuffer = await res.arrayBuffer(); // byte array字节数组
     const i16A = ulawToPCM(new Uint8Array(arrayBuffer),16)
     const wavBuf = encodeWAV(new DataView(i16A.buffer), 8000, 1, 16) // 8KHZ 单声道 16-bit
     const ctx = new (window.AudioContext || window.webkitAudioContext())();
     const audioBuffer = await ctx.decodeAudioData(wavBuf, decodeData => decodeData, err => console.error(err));
     const source = ctx.createBufferSource()
-    source.buffer = audioBuffer; // 设置数据 設定データ
-    source.loop = false; //设置，循环播放 設定、ループ再生
-    source.connect(ctx.destination); // 头尾相连 AudioContext接続
-    source.start(0); //立即播放 再生
+    source.buffer = audioBuffer; // 设置数据
+    source.loop = false; //设置，循环播放
+    source.connect(ctx.destination); // 头尾相连
+    source.start(0); //立即播放
 }

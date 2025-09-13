@@ -1,13 +1,19 @@
-use rsipstack::{transport::{SipAddr, udp::UdpConnection}, Result, Error as RsError};
-use std::{fs, net::SocketAddr, sync::Arc, time::{Duration, Instant}};
-use tokio::{select, sync::Mutex, io::AsyncWriteExt};
+use rsipstack::{
+    Error as RsError, Result,
+    transport::{SipAddr, udp::UdpConnection},
+};
+use rtp_rs::{RtpPacketBuilder, RtpReader};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::{select, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use rtp_rs::{RtpPacketBuilder, RtpReader};
 
-use crate::sip::{get_first_non_loopback_interface, MediaSessionOption};
-use crate::utils::local_time;
-use crate::web::db::{execute, Pool, Queries};
+use crate::sip::{MediaSessionOption, get_first_non_loopback_interface};
+use crate::web::db::{Pool, Queries, append_chunk_blob, execute};
 
 pub async fn build_rtp_conn(
     opt: Arc<Mutex<MediaSessionOption>>,
@@ -28,7 +34,7 @@ pub async fn build_rtp_conn(
                 .map(|ip| ip.parse::<SocketAddr>().expect("Invalid external IP")),
             Some(cancel_token.clone()),
         )
-            .await
+        .await
         {
             conn = Some(c);
             break;
@@ -38,7 +44,9 @@ pub async fn build_rtp_conn(
     }
 
     if conn.is_none() {
-        return Err(anyhow::Error::from(RsError::Error("Failed to bind RTP socket".to_string())));
+        return Err(anyhow::Error::from(RsError::Error(
+            "Failed to bind RTP socket".to_string(),
+        )));
     }
 
     let conn = conn.unwrap();
@@ -67,20 +75,27 @@ pub async fn build_rtp_conn(
     Ok((conn, sdp))
 }
 
+pub async fn recved_call(pool: &Pool, id: usize, caller: String) -> anyhow::Result<()> {
+    execute(pool, Queries::InsertData(id, caller, vec![0; 300000]))
+        .await
+        .expect("insert caller");
+    Ok(())
+}
+
 pub async fn write_pcm(
     conn: UdpConnection,
     pool: Pool,
     token: CancellationToken,
-    caller: String,
+    id: usize,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-    let mut data: Vec<u8> = vec![];
-    let id = local_time().parse::<usize>().unwrap();
+
     select! {
         _ = token.cancelled() => {
             info!("RTP session cancelled");
         }
         _ = async {
+            let mut n = 0;
             loop {
                 let mut mbuf = vec![0; 1500];
                 match conn.recv_raw(&mut mbuf).await {
@@ -91,7 +106,10 @@ pub async fn write_pcm(
                             }
                             let pcmu = rtp.payload();
                             let dat = &pcmu[..len-12];
-                            data.append(&mut dat.to_vec());
+                            let con = pool.get().expect("failed to get connection from pool");
+                            if let Ok(offset) = append_chunk_blob(&con, id, n, dat) {
+                                n = offset;
+                            }
 
                             let elapsed = start.elapsed();
                             if 30 < elapsed.as_secs() {
@@ -110,30 +128,8 @@ pub async fn write_pcm(
             info!("playback finished, hangup");
         }
     }
-    info!("write db: {:?} {:?} {:?}", id, caller, data.len());
-    let file = format!("voicemail/recv_{}_{}.au", local_time(), caller);
-    write_file(&file, &data).await;
-    execute(&pool, Queries::InsertData(id, caller, data)).await.expect("write database");
     Ok(())
 }
-
-pub async fn write_file(file: &str, dat: &[u8]) {
-    let mut pcm = tokio::fs::File::create(file).await.expect("save pcm");
-    match pcm.write_all(dat).await {
-        Ok(_) => {
-        }
-        Err(e) => {
-            info!("Failed to write pcm: {:?}", e);
-        }
-    };
-    pcm.flush().await.expect("buf flush");
-}
-
-#[allow(unused)]
-pub fn delete_file(file: &str) {
-    fs::remove_file(file).expect("TODO: panic message");
-}
-
 
 pub async fn play_echo(conn: UdpConnection, token: CancellationToken) -> Result<()> {
     select! {
@@ -170,11 +166,12 @@ pub async fn play_audio_file(
     token: CancellationToken,
     ssrc: u32,
     filename: &str,
-    mut ts: u32,
-    mut seq: u16,
     peer_addr: String,
     payload_type: u8,
 ) -> Result<(u32, u16)> {
+    let mut ts = 0;
+    let mut seq = 1;
+
     select! {
         _ = token.cancelled() => {
             info!("RTP session cancelled");
@@ -195,7 +192,8 @@ pub async fn play_audio_file(
                 }
             };
             let file_name = format!("./assets/{filename}.{ext}");
-            info!("Playing {filename} file: {} payload_type:{} sample_size:{}", file_name, payload_type, sample_size);
+            info!("Playing {filename} file: {} payload_type:{} sample_size:{}",
+                file_name, payload_type, sample_size);
             let example_data = tokio::fs::read(file_name).await.expect("read file");
 
             for chunk in example_data.chunks(sample_size) {
