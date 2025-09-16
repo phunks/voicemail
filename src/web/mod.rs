@@ -2,13 +2,11 @@ use actix_web::cookie::ParseError::EmptyName;
 use actix_web::error::{ErrorInternalServerError, ErrorNotFound, ParseError};
 use actix_web::http::StatusCode;
 use actix_web::http::header::{ContentDisposition, ContentType};
-use actix_web::{
-    App, Error as AcError, Error, HttpResponse, HttpServer, Result as AcResult, get, middleware,
-    web,
-};
+use actix_web::{App, Error as AcError, Error, HttpResponse, HttpServer, Result as AcResult, get, middleware, web, put};
 use anyhow::Result;
 use std::io;
 use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 
 pub mod db;
 use crate::utils::{open, trim_null_bytes};
@@ -65,6 +63,28 @@ async fn del_voicemail(
     Ok(HttpResponse::Ok().json(result))
 }
 
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct User {
+    pub tel: String,
+    pub name: String,
+}
+
+#[put("/api/mod")]
+async fn modify_caller (
+    db: web::Data<Pool>,
+    item: web::Json<User>,
+) -> Result<HttpResponse, AcError> {
+    log::info!("{item:?}");
+    let tel = item.tel.to_owned();
+
+    let result = match item.name.as_str().trim() {
+        "" => execute(&db, Queries::DeleteContacts(tel)).await?,
+        name => execute(&db, Queries::AddContacts(tel, name.to_owned())).await?,
+    };
+    Ok(HttpResponse::Ok().json(result))
+}
+
 #[get("/api/voice/{id}")]
 async fn voice_data(db: web::Data<Pool>, path: web::Path<String>) -> Result<HttpResponse, AcError> {
     let id = path.into_inner().parse::<i64>().expect("get voice data");
@@ -94,6 +114,7 @@ pub async fn server(pool: Pool) -> io::Result<()> {
             .service(voicemail_all)
             .service(del_voicemail)
             .service(voice_data)
+            .service(modify_caller)
             .service(assets)
     })
     .bind(("0.0.0.0", 8080))?

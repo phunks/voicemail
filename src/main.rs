@@ -13,14 +13,20 @@ mod web;
 async fn main() -> Result<()> {
     subscriber();
 
-    let manager = SqliteConnectionManager::file("voicemail.db").with_init(|c| {
+    let manager = SqliteConnectionManager::file("./database/voicemail.db").with_init(|c| {
         c.execute_batch(
-            "create table if not exists voicemail (
-                id INTEGER PRIMARY KEY,
-                event_time TEXT NOT NULL DEFAULT current_timestamp,
-                caller TEXT,
-                data BLOB
-            )",
+            "BEGIN;
+                create table if not exists voicemail (
+                    id INTEGER PRIMARY KEY,
+                    event_time TEXT NOT NULL DEFAULT current_timestamp,
+                    caller TEXT,
+                    data BLOB
+                );
+                create table if not exists contacts (
+                    caller TEXT PRIMARY KEY,
+                    name TEXT
+                );
+            COMMIT;",
         )
     });
     let pool = Pool::new(manager)?;

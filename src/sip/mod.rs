@@ -1,6 +1,6 @@
 use crate::lazy_regex;
 use crate::sip::play_file::recved_call;
-use crate::utils::local_time;
+use crate::utils::utc_time;
 use crate::web::db::Pool;
 use anyhow::{Error, Result};
 use clap::Parser;
@@ -363,6 +363,12 @@ async fn process_invite(
     let caller = RE
         .captures_iter(&opt.lock().await.get_header().unwrap().to_string())
         .map(|cap| cap["a"].to_owned())
+        .map(|x| {
+            match x.is_empty() {
+                true => "unknown caller".to_owned(),
+                false => x,
+            }
+        })
         .collect::<String>();
 
     let body = String::from_utf8_lossy(dialog.initial_request().body()).to_string();
@@ -429,7 +435,7 @@ async fn process_invite(
                 if echo {
                     play_echo(conn, rtp_token).await.expect("play echo");
                 } else if rec {
-                    let id = local_time().parse::<usize>().unwrap();
+                    let id = utc_time().parse::<usize>().unwrap();
                     recved_call(&pool, id, caller).await.expect("");
                     play_audio_file(conn.clone(), rtp_token.clone(), ssrc, "voicemail", peer_addr, payload_type)
                         .await

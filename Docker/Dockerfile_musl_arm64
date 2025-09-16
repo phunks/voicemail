@@ -1,11 +1,10 @@
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM alpine:3.22
 ENV TZ=Asia/Tokyo
 WORKDIR /app
-USER nonroot
-COPY --chown=nonroot:nonroot ./target/aarch64-unknown-linux-musl/release/voicemail /app/
-COPY --chown=nonroot:nonroot ./voicemail.db /app/
-ADD --chown=nonroot:nonroot ./assets/ /app/assets/
-ADD --chown=nonroot:nonroot ./recv_voice/ /app/recv_voice/
+RUN apk add tzdata && ln -s /usr/share/zoneinfo/Asia/Tokyo /etc/localtime && echo "Asia/Tokyo" > /etc/timezone && mkdir /app/database
+
+COPY ./target/aarch64-unknown-linux-musl/release/voicemail /app/
+ADD  ./assets/ /app/assets/
 EXPOSE 8080/tcp
 EXPOSE 5060-5070/udp
 ENTRYPOINT ["/app/voicemail", "--rec", "--sip-server", "172.17.0.4", "--user", "101", "--password", "101"]

@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <title>voicemail</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/hover.css" rel="stylesheet">
     <script src="js/g711.js"></script>
     <script src="js/utils.js"></script>
 </head>
@@ -42,21 +43,24 @@
             let n = 0;
             lists.forEach(json => {
                 n += 1
-                const taskItem = document.createElement('div');
-                taskItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+                const voiceItem = document.createElement('div');
+                voiceItem.className = 'list-group-item d-flex justify-content-between align-items-center';
 
-                const taskNo = document.createElement('div');
-                taskNo.textContent = n;
-                taskNo.className = 'col-sm-1 text-left';
-                const taskId = document.createElement('div');
-                taskId.textContent = json.VoiceList.id;
-                taskId.className = 'd-none';
-                const taskDate = document.createElement('div');
-                taskDate.textContent = json.VoiceList.event_time;
-                taskDate.className = 'col-sm-6 text-left';
-                const taskCaller = document.createElement('div');
-                taskCaller.textContent = json.VoiceList.caller;
-                taskCaller.className = 'col-sm-3 text-right';
+                const voiceNo = document.createElement('div');
+                voiceNo.textContent = n;
+                voiceNo.className = 'col-sm-1 text-left';
+                const voiceId = document.createElement('div');
+                voiceId.textContent = json.VoiceList.id;
+                voiceId.className = 'voiceid';
+                const voiceDate = document.createElement('div');
+                voiceDate.textContent = local_time_fmt(json.VoiceList.event_time);
+                voiceDate.className = 'col-sm-6 text-left';
+                const voiceCaller = document.createElement('div');
+                voiceCaller.textContent = json.VoiceList.caller;
+                voiceCaller.className = 'editable col-sm-3 text-right';
+                const voiceTel = document.createElement('div');
+                voiceTel.textContent = json.VoiceList.tel;
+                voiceTel.className = 'tel';
                 const delBtn = document.createElement('button');
                 delBtn.className = 'btn btn-sm btn-danger';
                 delBtn.textContent = '削除';
@@ -67,15 +71,69 @@
                 playBtn.textContent = '再生';
                 playBtn.onclick = () => playVoiceData(json.VoiceList.id);
 
-                taskItem.appendChild(taskNo);
-                taskItem.appendChild(taskId);
-                taskItem.appendChild(taskDate);
-                taskItem.appendChild(taskCaller);
-                taskItem.appendChild(delBtn);
-                taskItem.appendChild(playBtn);
-                listElem.appendChild(taskItem);
+                voiceItem.appendChild(voiceNo);
+                voiceItem.appendChild(voiceId);
+                voiceItem.appendChild(voiceDate);
+                voiceItem.appendChild(voiceCaller);
+                voiceItem.appendChild(voiceTel);
+                voiceItem.appendChild(delBtn);
+                voiceItem.appendChild(playBtn);
+                listElem.appendChild(voiceItem);
             });
 
+            document.addEventListener('click', function(e) {
+                const target = e.target;
+
+                if (target.classList.contains('editable')) {
+                    const originalText = target.textContent;
+                    const tel = target.parentElement.getElementsByClassName('tel')[0].textContent;
+
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = originalText;
+                    input.className = 'form-control form-control-sm';
+                    input.style.textAlign = 'right';
+
+                    target.textContent = '';
+                    target.appendChild(input);
+                    input.focus();
+
+                    const commitEdit = () => {
+                        const newValue = input.value.trim();
+
+                        if (newValue !== originalText) {
+                            fetch(`/api/mod`, {
+                                method: 'PUT',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ tel: tel, name: newValue })
+                            })
+                                .then(response => {
+                                    if (!response.ok) throw new Error('サーバーエラー');
+                                })
+                                .then(data => {
+                                    location.reload();
+                                })
+                                .catch(err => {
+                                    alert('更新に失敗しました: ' + err.message);
+                                    target.textContent = originalText;
+                                });
+                        } else {
+                            target.textContent = originalText;
+                        }
+                    };
+
+                    input.addEventListener('blur', commitEdit);
+                    input.addEventListener('keydown', function(e) {
+                        if (e.key === 'Enter') {
+                            commitEdit();
+                        } else if (e.key === 'Escape') {
+                            target.textContent = originalText;
+                        }
+                    });
+                }
+            });
         } catch (err) {
             console.error('読み込みエラー:', err);
             listElem.innerHTML = '<div class="text-danger text-center">読み込みに失敗しました。</div>';
@@ -100,6 +158,27 @@
             console.error('削除エラー:', err);
             alert('削除に失敗しました');
         }
+    }
+
+    function local_time(event_time) {
+        return new Date(Date.parse(event_time)).toLocaleString(navigator.language, {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            weekday: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        });
+    }
+
+    function local_time_fmt(event_time) {
+        return new Intl.DateTimeFormat(navigator.language, {
+            dateStyle: "medium",
+            timeStyle: "medium",
+            hour12: false,
+        }).format(new Date(Date.parse(event_time)));
     }
     
     // 初期読み込み

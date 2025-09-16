@@ -1,0 +1,15 @@
+
+.voiceid {
+    display: none;
+}
+
+.tel {
+    display: none;
+    position: absolute;
+    left: 350px;
+}
+
+.list-group-item:hover .tel {
+    display: block;
+    opacity: 0.5;
+}

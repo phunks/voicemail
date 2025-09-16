@@ -13,6 +13,7 @@ pub fn open(x: PathBuf) -> String {
     fs::read_to_string(x).expect("Something went wrong")
 }
 
+#[allow(unused)]
 pub fn local_time() -> String {
     chrono::Local::now()
         .naive_local()
@@ -20,10 +21,25 @@ pub fn local_time() -> String {
         .to_string()
 }
 
+pub fn utc_time() -> String {
+    chrono::Utc::now()
+        .format("%Y%m%d%H%M%S")
+        .to_string()
+}
+
 pub fn format_date(date: i64) -> String {
     // 20250903120320 -> 2025-09-03 12:03:20
     let ndt = NaiveDateTime::parse_from_str(&date.to_string(), "%Y%m%d%H%M%S").unwrap();
-    ndt.format("%Y-%m-%d %H:%M:%S").to_string()
+    // ndt.format("%Y-%m-%dT%H:%M:%S%z").to_string()
+    ndt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+#[test]
+fn test_format_date() {
+    let aa = utc_time().parse::<i64>().unwrap();
+    let ndt = NaiveDateTime::parse_from_str(&aa.to_string(), "%Y%m%d%H%M%S").unwrap();
+    // println!("{}", Utc.from_utc_datetime(&ndt).to_string());
+    println!("{}", ndt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
 }
 
 pub fn trim_null_bytes(data: &[u8]) -> &[u8] {

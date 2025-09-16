@@ -16,6 +16,7 @@ pub enum DataType {
         id: usize,
         event_time: String,
         caller: String,
+        tel: String,
     },
     Data { data: Vec<u8>, },
     Id { id: usize, },
@@ -28,10 +29,17 @@ pub enum Queries {
     VoiceData(i64),
     DeleteVoicemail(i64),
     InsertData(usize, String, Vec<u8>),
+    AddContacts(String, String),
+    DeleteContacts(String)
 }
 
-pub fn all_voicemail(conn: R2connection) -> VoicemailResult {
-    let stmt = conn.prepare("SELECT * FROM voicemail")?;
+pub fn all_voicemail(conn: &R2connection) -> VoicemailResult {
+    let stmt = conn.prepare("
+    SELECT A.id, A.event_time, A.caller as tel,
+      COALESCE(B.name, A.caller) AS caller
+    FROM voicemail as A
+    LEFT JOIN contacts as B
+    ON A.caller = B.caller")?;
     map_stmt_rows(stmt)
 }
 
@@ -40,30 +48,61 @@ fn map_stmt_rows(mut stmt: Statement) -> VoicemailResult {
         Ok(DataType::VoiceList {
             id: row.get(0)?,
             event_time: row.get(1)?,
-            caller: row.get(2)?,
+            tel: row.get(2)?,
+            caller: row.get(3)?,
         })
     })
     .and_then(Iterator::collect)
 }
 
-pub fn voice_data(conn: R2connection, id: i64) -> VoicemailResult {
+pub fn voice_data(conn: &R2connection, id: i64) -> VoicemailResult {
     let data = conn.query_row("SELECT data FROM voicemail WHERE id = (?1)",
                               [id], |row| { row.get(0) })?;
     Ok(vec![DataType::Data { data }])
 }
 
-pub fn del_voicemail(conn: R2connection, id: i64) -> VoicemailResult {
+pub fn del_voicemail(conn: &R2connection, id: i64) -> VoicemailResult {
     conn.execute("DELETE FROM voicemail WHERE id = (?1)", [id])?;
-    let stmt = conn.prepare("SELECT * FROM voicemail")?;
-    map_stmt_rows(stmt)
+    all_voicemail(conn)
 }
 
-pub fn insert_data(conn: R2connection, id: usize, caller: &str, data: &[u8]) -> VoicemailResult {
+pub fn insert_data(conn: &R2connection, id: usize, caller: &str, data: &[u8]) -> VoicemailResult {
     conn.execute(
         "INSERT INTO voicemail (id, event_time, caller, data) VALUES (?1, ?2, ?3, ?4)",
         params![id as i64, format_date(id as i64), caller, data],
     )?;
     Ok(vec![DataType::Id { id }])
+}
+
+fn insert_contacts(conn: &R2connection, caller: &str, name: &str) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO contacts (caller, name) VALUES (?1, ?2)",
+        [caller, name],
+    )
+}
+
+fn update_contacts(conn: &R2connection, caller: &str, name: &str) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "UPDATE contacts SET name = (?2) WHERE caller = (?1)",
+        [caller, name],
+    )
+}
+
+pub fn delete_contacts(conn: &R2connection, caller: &str) -> VoicemailResult {
+    conn.execute(
+        "DELETE FROM contacts WHERE caller = (?1)",
+        [caller],
+    )?;
+    all_voicemail(conn)
+}
+
+
+pub fn add_contacts(conn: &R2connection, caller: &str, name: &str) -> VoicemailResult {
+    insert_contacts(conn, caller, name).unwrap_or_else(|e|{
+        log::info!("{e:?}");
+        update_contacts(conn, caller, name).expect("update contacts")
+    });
+    all_voicemail(conn)
 }
 
 pub fn append_chunk_blob(
@@ -97,11 +136,15 @@ pub async fn execute(pool: &Pool, query: Queries) -> Result<Vec<DataType>, Error
 
     web::block(move || {
         match query {
-            Queries::AllVoicemail => all_voicemail(conn),
-            Queries::VoiceData(id) => voice_data(conn, id),
-            Queries::DeleteVoicemail(id) => del_voicemail(conn, id),
+            Queries::AllVoicemail => all_voicemail(&conn),
+            Queries::VoiceData(id) => voice_data(&conn, id),
+            Queries::DeleteVoicemail(id) => del_voicemail(&conn, id),
             Queries::InsertData(id, caller, data)
-                => insert_data(conn, id, &caller, &data),
+                => insert_data(&conn, id, &caller, &data),
+            Queries::AddContacts(caller, name)
+                => add_contacts(&conn, &caller, &name),
+            Queries::DeleteContacts(caller)
+                => delete_contacts(&conn, &caller),
         }
     })
     .await?
@@ -110,17 +153,17 @@ pub async fn execute(pool: &Pool, query: Queries) -> Result<Vec<DataType>, Error
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{chunked, file_open, local_time};
+    use crate::utils::{chunked, file_open, local_time, utc_time};
     use crate::web::db::{Pool, Queries, execute};
     use r2d2_sqlite::SqliteConnectionManager;
     #[actix_web::test]
     async fn test_blob() {
-        let manager = SqliteConnectionManager::file("voicemail.db");
+        let manager = SqliteConnectionManager::file("../../database/voicemail.db");
         let pool = Pool::new(manager).unwrap();
 
         let zero_blob: Vec<u8> = vec![0; 3000000];
         let data = file_open("recv_voice/recv_20250913013410_102.au").expect("file open");
-        let id = local_time().parse::<usize>().unwrap();
+        let id = utc_time().parse::<usize>().unwrap();
 
         let caller = "test caller".to_string();
 
