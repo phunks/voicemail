@@ -47,6 +47,9 @@ async fn assets(assets: web::Path<(String, String)>) -> Result<HttpResponse, AcE
             s if s == "css" => Ok(HttpResponse::build(StatusCode::OK)
                 .content_type(ContentType(mime::TEXT_CSS_UTF_8))
                 .body(d?)),
+            s if s == "img" => Ok(HttpResponse::build(StatusCode::OK)
+                .content_type(ContentType(mime::IMAGE_PNG))
+                .body(d?)),
             _ => Err(ErrorNotFound(EmptyName)),
         },
         Err(e) => Err(ErrorInternalServerError(e)),

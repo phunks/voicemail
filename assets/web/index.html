@@ -13,15 +13,21 @@
 <div class="container py-5" style="width:800px">
     <h1 class="text-center mb-4">📞voicemail</h1>
 
-    <div id="voicemail-list" class="list-group">
-        <div class="text-center text-secondary">読み込み中...</div>
-    </div>
+    <div id="voicemail-list" class="list-group"></div>
 </div>
-
 <script>
+    async function loadMessages() {
+        if (navigator.language.startsWith('ja')) {
+            msg = await import('./js/ja-jp.js');
+        } else {
+            msg = await import('./js/en-us.js');
+        }
+        return msg;
+    }
     async function loadVoices() {
         const listElem = document.getElementById('voicemail-list');
-        listElem.innerHTML = '<div class="text-center text-secondary">読み込み中...</div>';
+
+        listElem.innerHTML = '<div class="text-center text-secondary">'+msg.LOADING+'</div>';
 
         try {
             const lists = await fetch('/api/all')
@@ -35,7 +41,7 @@
                 });
 
             if (lists.length === 0) {
-                listElem.innerHTML = '<div class="text-center text-muted">着信はありません。</div>';
+                listElem.innerHTML = '<div class="text-center text-muted">'+msg.NO_CALL+'</div>';
                 return;
             }
 
@@ -61,14 +67,14 @@
                 const voiceTel = document.createElement('div');
                 voiceTel.textContent = json.VoiceList.tel;
                 voiceTel.className = 'tel';
-                const delBtn = document.createElement('button');
-                delBtn.className = 'btn btn-sm btn-danger';
-                delBtn.textContent = '削除';
-                delBtn.onclick = () => deleteVoiceData(json.VoiceList.id);
 
-                const playBtn = document.createElement('button');
-                playBtn.className = 'btn btn-sm btn-info';
-                playBtn.textContent = '再生';
+                const delBtn = document.createElement('img');
+                delBtn.src = 'img/del.png';
+                delBtn.alt = msg.DEL_VOICE;
+                delBtn.onclick = () => deleteVoiceData(json.VoiceList.id);
+                const playBtn = document.createElement('img');
+                playBtn.src = 'img/play.png';
+                playBtn.alt = msg.PLAY_VOICE;
                 playBtn.onclick = () => playVoiceData(json.VoiceList.id);
 
                 voiceItem.appendChild(voiceNo);
@@ -110,13 +116,13 @@
                                 body: JSON.stringify({ tel: tel, name: newValue })
                             })
                                 .then(response => {
-                                    if (!response.ok) throw new Error('サーバーエラー');
+                                    if (!response.ok) throw new Error(msg.SRV_ERROR);
                                 })
                                 .then(data => {
                                     location.reload();
                                 })
                                 .catch(err => {
-                                    alert('更新に失敗しました: ' + err.message);
+                                    alert(msg.UPD_FAILED + err.message);
                                     target.textContent = originalText;
                                 });
                         } else {
@@ -135,13 +141,13 @@
                 }
             });
         } catch (err) {
-            console.error('読み込みエラー:', err);
-            listElem.innerHTML = '<div class="text-danger text-center">読み込みに失敗しました。</div>';
+            console.error(msg.READ_ERROR, err);
+            listElem.innerHTML = '<div class="text-danger text-center">'+msg.LOAD_ERROR+'</div>';
         }
     }
 
     async function deleteVoiceData(id) {
-        if (!confirm('この録音を削除しますか？')) return;
+        if (!confirm(msg.DEL_REC)) return;
 
         try {
             const res = await fetch(`/api/del/${id}`, {
@@ -151,12 +157,12 @@
             if (res.ok) {
                 await loadVoices(); // 再読み込み
             } else {
-                alert('削除に失敗しました');
+                alert(msg.DEL_FAILED);
             }
 
         } catch (err) {
-            console.error('削除エラー:', err);
-            alert('削除に失敗しました');
+            console.error(msg.DEL_ERROR, err);
+            alert(msg.DEL_ERROR);
         }
     }
 
@@ -175,12 +181,13 @@
 
     function local_time_fmt(event_time) {
         return new Intl.DateTimeFormat(navigator.language, {
-            dateStyle: "medium",
+            dateStyle: "long",
             timeStyle: "medium",
             hour12: false,
         }).format(new Date(Date.parse(event_time)));
     }
-    
+
+    var msg = loadMessages();
     // 初期読み込み
     loadVoices();
 </script>
