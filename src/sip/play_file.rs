@@ -89,13 +89,12 @@ pub async fn write_pcm(
     id: usize,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-
+    let mut n = 0;
     select! {
         _ = token.cancelled() => {
             info!("RTP session cancelled");
         }
         _ = async {
-            let mut n = 0;
             loop {
                 let mut mbuf = vec![0; 1500];
                 match conn.recv_raw(&mut mbuf).await {
@@ -106,6 +105,7 @@ pub async fn write_pcm(
                             }
                             let pcmu = rtp.payload();
                             let dat = &pcmu[..len-12];
+                            // println!("{dat:?}");
                             let con = pool.get().expect("failed to get connection from pool");
                             if let Ok(offset) = append_chunk_blob(&con, id, n, dat) {
                                 n = offset;
@@ -128,6 +128,12 @@ pub async fn write_pcm(
             info!("playback finished, hangup");
         }
     }
+
+    let _ = execute(
+        &pool,
+        Queries::UpdateSampleTime(id,
+        n.checked_div(8).unwrap_or_default()
+        )).await.expect("update sample time");
     Ok(())
 }
 

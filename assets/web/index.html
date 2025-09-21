@@ -4,36 +4,38 @@
     <meta charset="UTF-8">
     <title>voicemail</title>
     <link href="css/bootstrap.min.css" rel="stylesheet">
+    <script src="js/bootstrap.bundle.min.js"></script>
     <link href="css/hover.css" rel="stylesheet">
     <script src="js/g711.js"></script>
     <script src="js/utils.js"></script>
+    <script src="js/player.js"></script>
 </head>
 <body class="bg-light">
 
 <div class="container py-5" style="width:800px">
     <h1 class="text-center mb-4">📞voicemail</h1>
-
+    <div class="list">
     <div id="voicemail-list" class="list-group"></div>
+    </div>
 </div>
 <script>
     async function loadMessages() {
         if (navigator.language.startsWith('ja')) {
-            msg = await import('./js/ja-jp.js');
+            MSG = await import('./js/ja-jp.js');
         } else {
-            msg = await import('./js/en-us.js');
+            MSG = await import('./js/en-us.js');
         }
-        return msg;
+        return MSG;
     }
     async function loadVoices() {
         const listElem = document.getElementById('voicemail-list');
 
-        listElem.innerHTML = '<div class="text-center text-secondary">'+msg.LOADING+'</div>';
+        listElem.innerHTML = '<div class="text-center text-secondary">'+MSG.LOADING+'</div>';
 
         try {
             const lists = await fetch('/api/all')
                 .then(response => response.json())
                 .then(data => {
-                    console.log(data);
                     return data;
                 })
                 .catch(error => {
@@ -41,7 +43,7 @@
                 });
 
             if (lists.length === 0) {
-                listElem.innerHTML = '<div class="text-center text-muted">'+msg.NO_CALL+'</div>';
+                listElem.innerHTML = '<div class="text-center text-muted">'+MSG.NO_CALL+'</div>';
                 return;
             }
 
@@ -64,18 +66,35 @@
                 const voiceCaller = document.createElement('div');
                 voiceCaller.textContent = json.VoiceList.caller;
                 voiceCaller.className = 'editable col-sm-3 text-right';
+                if (json.VoiceList.caller !== json.VoiceList.tel) {
+                    voiceCaller.dataset.bsToggle = 'tooltip';
+                    voiceCaller.dataset.bsPlacement = "left";
+                    voiceCaller.dataset.bsTitle = json.VoiceList.tel;
+                    voiceCaller.dataset.bsOffset = "0, 20";
+                    voiceCaller.dataset.bsTrigger = "hover";
+                }
+
                 const voiceTel = document.createElement('div');
                 voiceTel.textContent = json.VoiceList.tel;
                 voiceTel.className = 'tel';
 
                 const delBtn = document.createElement('img');
-                delBtn.src = 'img/del.png';
-                delBtn.alt = msg.DEL_VOICE;
+                delBtn.className = 'img-btn';
+                delBtn.src = 'img/del.svg';
+                delBtn.alt = MSG.DEL_VOICE;
                 delBtn.onclick = () => deleteVoiceData(json.VoiceList.id);
                 const playBtn = document.createElement('img');
-                playBtn.src = 'img/play.png';
-                playBtn.alt = msg.PLAY_VOICE;
-                playBtn.onclick = () => playVoiceData(json.VoiceList.id);
+                playBtn.className = 'img-btn';
+                playBtn.src = 'img/play.svg';
+                playBtn.alt = MSG.PLAY_VOICE;
+                playBtn.onclick = () => togglePlay(json.VoiceList.id, playBtn);
+                if (json.VoiceList.time !== 0) {
+                    playBtn.dataset.bsToggle = 'tooltip';
+                    playBtn.dataset.bsPlacement = "right";
+                    playBtn.dataset.bsTitle = (json.VoiceList.time / 1000) + ' sec';
+                    playBtn.dataset.bsOffset = "0, 15";
+                    playBtn.dataset.bsTrigger = "hover";
+                }
 
                 voiceItem.appendChild(voiceNo);
                 voiceItem.appendChild(voiceId);
@@ -116,13 +135,13 @@
                                 body: JSON.stringify({ tel: tel, name: newValue })
                             })
                                 .then(response => {
-                                    if (!response.ok) throw new Error(msg.SRV_ERROR);
+                                    if (!response.ok) throw new Error(MSG.SRV_ERROR);
                                 })
                                 .then(data => {
                                     location.reload();
                                 })
                                 .catch(err => {
-                                    alert(msg.UPD_FAILED + err.message);
+                                    alert(MSG.UPD_FAILED + err.message);
                                     target.textContent = originalText;
                                 });
                         } else {
@@ -141,13 +160,17 @@
                 }
             });
         } catch (err) {
-            console.error(msg.READ_ERROR, err);
-            listElem.innerHTML = '<div class="text-danger text-center">'+msg.LOAD_ERROR+'</div>';
+            console.error(MSG.READ_ERROR, err);
+            listElem.innerHTML = '<div class="text-danger text-center">'+MSG.LOAD_ERROR+'</div>';
         }
+
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(e => {
+            new bootstrap.Tooltip(e)
+        });
     }
 
     async function deleteVoiceData(id) {
-        if (!confirm(msg.DEL_REC)) return;
+        if (!confirm(MSG.DEL_REC)) return;
 
         try {
             const res = await fetch(`/api/del/${id}`, {
@@ -157,12 +180,12 @@
             if (res.ok) {
                 await loadVoices(); // 再読み込み
             } else {
-                alert(msg.DEL_FAILED);
+                alert(MSG.DEL_FAILED);
             }
 
         } catch (err) {
-            console.error(msg.DEL_ERROR, err);
-            alert(msg.DEL_ERROR);
+            console.error(MSG.DEL_ERROR, err);
+            alert(MSG.DEL_ERROR);
         }
     }
 
@@ -181,13 +204,13 @@
 
     function local_time_fmt(event_time) {
         return new Intl.DateTimeFormat(navigator.language, {
-            dateStyle: "long",
+            dateStyle: "short",
             timeStyle: "medium",
             hour12: false,
         }).format(new Date(Date.parse(event_time)));
     }
 
-    var msg = loadMessages();
+    var MSG = loadMessages();
     // 初期読み込み
     loadVoices();
 </script>

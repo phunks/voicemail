@@ -5,11 +5,20 @@
 
 .tel {
     display: none;
-    position: absolute;
-    left: 350px;
 }
 
-.list-group-item:hover .tel {
-    display: block;
-    opacity: 0.5;
+.img-btn {
+    width: 34px;
+}
+
+.tooltip {
+    --bs-tooltip-bg: #78715f;
+    --bs-tooltip-color: #fff;
+    --bs-tooltip-opacity: .8;
+    --bs-tooltip-arrow-height: .7rem;
+}
+
+.list {
+    height: calc(100vh - 200px);
+    overflow-y: auto;
 }

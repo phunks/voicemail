@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
                     id INTEGER PRIMARY KEY,
                     event_time TEXT NOT NULL DEFAULT current_timestamp,
                     caller TEXT,
+                    time INTEGER,
                     data BLOB
                 );
                 create table if not exists contacts (

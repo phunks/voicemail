@@ -2,7 +2,7 @@ use crate::utils::format_date;
 use actix_web::{Error, error, web};
 use log::warn;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{MAIN_DB, Statement, params};
+use rusqlite::{MAIN_DB, Statement, params, Transaction};
 use serde::{Deserialize, Serialize};
 use std::io::{Seek, SeekFrom, Write};
 
@@ -17,6 +17,7 @@ pub enum DataType {
         event_time: String,
         caller: String,
         tel: String,
+        time: u64,
     },
     Data { data: Vec<u8>, },
     Id { id: usize, },
@@ -29,6 +30,7 @@ pub enum Queries {
     VoiceData(i64),
     DeleteVoicemail(i64),
     InsertData(usize, String, Vec<u8>),
+    UpdateSampleTime(usize, u64),
     AddContacts(String, String),
     DeleteContacts(String)
 }
@@ -36,7 +38,8 @@ pub enum Queries {
 pub fn all_voicemail(conn: &R2connection) -> VoicemailResult {
     let stmt = conn.prepare("
     SELECT A.id, A.event_time, A.caller as tel,
-      COALESCE(B.name, A.caller) AS caller
+        COALESCE(B.name, A.caller) AS caller,
+        A.time
     FROM voicemail as A
     LEFT JOIN contacts as B
     ON A.caller = B.caller")?;
@@ -50,23 +53,24 @@ fn map_stmt_rows(mut stmt: Statement) -> VoicemailResult {
             event_time: row.get(1)?,
             tel: row.get(2)?,
             caller: row.get(3)?,
+            time: row.get(4).unwrap_or_default(),
         })
     })
     .and_then(Iterator::collect)
 }
 
-pub fn voice_data(conn: &R2connection, id: i64) -> VoicemailResult {
+fn voice_data(conn: &R2connection, id: i64) -> VoicemailResult {
     let data = conn.query_row("SELECT data FROM voicemail WHERE id = (?1)",
                               [id], |row| { row.get(0) })?;
     Ok(vec![DataType::Data { data }])
 }
 
-pub fn del_voicemail(conn: &R2connection, id: i64) -> VoicemailResult {
+fn del_voicemail(conn: &R2connection, id: i64) -> VoicemailResult {
     conn.execute("DELETE FROM voicemail WHERE id = (?1)", [id])?;
     all_voicemail(conn)
 }
 
-pub fn insert_data(conn: &R2connection, id: usize, caller: &str, data: &[u8]) -> VoicemailResult {
+fn insert_data(conn: &R2connection, id: usize, caller: &str, data: &[u8]) -> VoicemailResult {
     conn.execute(
         "INSERT INTO voicemail (id, event_time, caller, data) VALUES (?1, ?2, ?3, ?4)",
         params![id as i64, format_date(id as i64), caller, data],
@@ -88,7 +92,16 @@ fn update_contacts(conn: &R2connection, caller: &str, name: &str) -> Result<usiz
     )
 }
 
-pub fn delete_contacts(conn: &R2connection, caller: &str) -> VoicemailResult {
+fn update_sample_time(conn: &R2connection, id: usize, time: u64) -> VoicemailResult {
+    conn.execute(
+        "UPDATE voicemail SET time = (?2) WHERE id = (?1)",
+        params![id, time],
+    )?;
+    Ok(vec![DataType::Id { id }])
+}
+
+
+fn delete_contacts(conn: &R2connection, caller: &str) -> VoicemailResult {
     conn.execute(
         "DELETE FROM contacts WHERE caller = (?1)",
         [caller],
@@ -97,7 +110,7 @@ pub fn delete_contacts(conn: &R2connection, caller: &str) -> VoicemailResult {
 }
 
 
-pub fn add_contacts(conn: &R2connection, caller: &str, name: &str) -> VoicemailResult {
+fn add_contacts(conn: &R2connection, caller: &str, name: &str) -> VoicemailResult {
     insert_contacts(conn, caller, name).unwrap_or_else(|e|{
         log::info!("{e:?}");
         update_contacts(conn, caller, name).expect("update contacts")
@@ -141,6 +154,8 @@ pub async fn execute(pool: &Pool, query: Queries) -> Result<Vec<DataType>, Error
             Queries::DeleteVoicemail(id) => del_voicemail(&conn, id),
             Queries::InsertData(id, caller, data)
                 => insert_data(&conn, id, &caller, &data),
+            Queries::UpdateSampleTime(id, time)
+                => update_sample_time(&conn, id, time),
             Queries::AddContacts(caller, name)
                 => add_contacts(&conn, &caller, &name),
             Queries::DeleteContacts(caller)
@@ -151,14 +166,38 @@ pub async fn execute(pool: &Pool, query: Queries) -> Result<Vec<DataType>, Error
     .map_err(error::ErrorInternalServerError)
 }
 
+#[allow(unused)]
+pub fn tx_append_chunk_blob(
+    conn: &Transaction,
+    id: usize,
+    offset: u64,
+    data: &[u8],
+) -> Result<u64, rusqlite::Error> {
+    let rowid = conn.query_row("SELECT rowid FROM voicemail WHERE id = (?1)",
+                               [id], |row| { row.get(0) })?;
+    let mut blob = conn.blob_open(MAIN_DB, "voicemail", "data", rowid, false)?;
+
+    match blob.seek(SeekFrom::Start(offset)) {
+        Ok(_) => {
+            let bytes_written = blob.write(data).expect("blob write") as u64;
+            Ok(offset + bytes_written)
+        }
+        Err(e) => {
+            warn!("{e:?}");
+            Ok(offset)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::utils::{chunked, file_open, local_time, utc_time};
-    use crate::web::db::{Pool, Queries, execute};
+    use std::time::Instant;
+    use crate::utils::{chunked, file_open, utc_time};
+    use crate::web::db::{Pool, Queries, execute, tx_append_chunk_blob};
     use r2d2_sqlite::SqliteConnectionManager;
     #[actix_web::test]
     async fn test_blob() {
-        let manager = SqliteConnectionManager::file("../../database/voicemail.db");
+        let manager = SqliteConnectionManager::file("database/voicemail.db");
         let pool = Pool::new(manager).unwrap();
 
         let zero_blob: Vec<u8> = vec![0; 3000000];
@@ -173,12 +212,15 @@ mod tests {
         let mut con = pool.get().unwrap();
         let tx = con.transaction().unwrap();
         let mut n = 0;
+        let start = Instant::now();
         for i in chunked(data, 160) {
-            // if let Ok(offset) = append_chunk_blob(&tx, id, n, &i) {
-            //     println!("write {offset:?}");
-            //     n = offset;
-            // }
+            if let Ok(offset) = tx_append_chunk_blob(&tx, id, n, &i) {
+                // println!("write {offset:?}");
+                n = offset;
+            }
         }
+        let end = start.elapsed();
+        println!("{}.{:03}秒経過しました。", end.as_secs(), end.subsec_nanos() / 1_000_000);
         tx.commit().expect("commit tx");
 
         println!("{result:?}");
