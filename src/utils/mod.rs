@@ -1,16 +1,16 @@
 use chrono::NaiveDateTime;
-use std::fs;
+use std::{fs, io};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::io::AsyncWriteExt;
 use tracing::info;
+use bytes::Bytes;
 
 pub mod macros;
-
-pub fn open(x: PathBuf) -> String {
-    fs::read_to_string(x).expect("Something went wrong")
+pub fn open(x: PathBuf) -> Result<String, io::Error> {
+    fs::read_to_string(x)
 }
 
 #[allow(unused)]
@@ -42,14 +42,14 @@ fn test_format_date() {
     println!("{}", ndt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
 }
 
-pub fn trim_null_bytes(data: &[u8]) -> &[u8] {
+pub fn trim_null_bytes(data: &[u8]) -> Bytes {
     let start = data.iter().position(|&b| b != 0x00).unwrap_or(0);
     let end = data
         .iter()
         .rposition(|&b| b != 0x00)
         .map(|i| i + 1)
         .unwrap_or(0);
-    &data[start..end]
+    Bytes::copy_from_slice(&data[start..end])
 }
 
 #[allow(unused)]

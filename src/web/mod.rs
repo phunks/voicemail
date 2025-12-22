@@ -7,17 +7,28 @@ use anyhow::Result;
 use std::io;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use crate::utils::{open, trim_null_bytes};
+use db::DataType::Data;
+use db::{Queries, execute};
+use db::Pool;
 
 pub mod db;
-use crate::utils::{open, trim_null_bytes};
-use crate::web::db::DataType::Data;
-use crate::web::db::{Queries, execute};
-use db::Pool;
 
 #[get("/")]
 async fn index() -> AcResult<HttpResponse> {
     let p = String::from("assets/web/index.html");
-    let x = open(PathBuf::from(p));
+    let x = open(PathBuf::from(p)).map_err(|e| ErrorInternalServerError(e))?;
+    Ok(HttpResponse::build(StatusCode::OK)
+        .content_type(ContentType::html())
+        .body(x))
+}
+
+#[get("/{html}")]
+async fn sip_html(html: web::Path<String>) -> AcResult<HttpResponse> {
+    let html = html.into_inner();
+    let p = format!("assets/web/{}", html);
+
+    let x = open(PathBuf::from(p)).map_err(|e| ErrorInternalServerError(e))?;
     Ok(HttpResponse::build(StatusCode::OK)
         .content_type(ContentType::html())
         .body(x))
@@ -40,14 +51,14 @@ async fn assets(assets: web::Path<(String, String)>) -> Result<HttpResponse, AcE
 
     let p = format!("assets/web/{}/{}", path, file);
     match web::block(|| std::fs::read(PathBuf::from(p))).await {
-        Ok(d) => match path {
-            s if s == "js" => Ok(HttpResponse::build(StatusCode::OK)
+        Ok(d) => match path.as_str() {
+            "js" => Ok(HttpResponse::build(StatusCode::OK)
                 .content_type(ContentType(mime::APPLICATION_JAVASCRIPT_UTF_8))
                 .body(d?)),
-            s if s == "css" => Ok(HttpResponse::build(StatusCode::OK)
+            "css" => Ok(HttpResponse::build(StatusCode::OK)
                 .content_type(ContentType(mime::TEXT_CSS_UTF_8))
                 .body(d?)),
-            s if s == "img" => Ok(HttpResponse::build(StatusCode::OK)
+            "img" => Ok(HttpResponse::build(StatusCode::OK)
                 .content_type(ContentType(mime::IMAGE_SVG))
                 .body(d?)),
             _ => Err(ErrorNotFound(EmptyName)),
@@ -98,7 +109,7 @@ async fn voice_data(db: web::Data<Pool>, path: web::Path<String>) -> Result<Http
             Ok(HttpResponse::Ok()
                 .content_type("audio/basic")
                 .append_header(cd)
-                .body(d.to_vec()))
+                .body(d))
         }
         _ => Err(Error::from(ParseError::Incomplete)),
     }

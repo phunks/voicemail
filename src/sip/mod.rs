@@ -1,9 +1,9 @@
-use crate::lazy_regex;
+use crate::{lazy_regex, speech_to_text};
 use crate::sip::play_file::recved_call;
 use crate::utils::utc_time;
 use crate::web::db::Pool;
 use anyhow::{Error, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use play_file::{build_rtp_conn, play_audio_file, play_echo, write_pcm};
 use rsip::Header;
 use rsip::{prelude::HeadersExt, typed::MediaType};
@@ -19,12 +19,7 @@ use rsipstack::{
     transaction::{TransactionReceiver, endpoint::EndpointInnerRef},
     transport::{TransportLayer, udp::UdpConnection},
 };
-use std::{
-    env,
-    net::IpAddr,
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{env, fmt, net::IpAddr, sync::{Arc, LazyLock}, time::Duration};
 use tokio::{
     select,
     sync::{Mutex, mpsc::unbounded_channel},
@@ -32,6 +27,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
+use crate::sms::notify;
 
 mod play_file;
 
@@ -47,6 +43,8 @@ struct MediaSessionOption {
     pub rtp_start_port: u16,
     pub echo: bool,
     pub rec: bool,
+    pub sms: bool,
+    pub ai_models: Option<AiModels>,
 }
 
 impl MediaSessionOption {
@@ -93,6 +91,28 @@ struct Args {
     /// SIP password
     #[arg(long)]
     password: Option<String>,
+    
+    /// Send SNS
+    #[arg(long, default_value = "false")]
+    sms: bool,
+
+    #[arg(value_name = "Ai Models", default_value = "gcp")]
+    ai_models: Option<AiModels>
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+pub enum AiModels {
+    Gcp,
+    Assemblyai,
+}
+
+impl fmt::Display for AiModels {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AiModels::Gcp => write!(f, "gcp"),
+            AiModels::Assemblyai => write!(f, "assemblyai"),
+        }
+    }
 }
 
 pub fn get_first_non_loopback_interface() -> Result<IpAddr> {
@@ -142,6 +162,8 @@ pub async fn voice_mail(pool: Pool) -> Result<()> {
         rtp_start_port: args.rtp_start_port,
         echo: args.echo,
         rec: args.rec,
+        sms: args.sms,
+        ai_models: args.ai_models,
     }));
 
     let transport_layer = TransportLayer::new(token.clone());
@@ -272,8 +294,8 @@ async fn process_incoming_request(
                 }
                 None => {
                     info!("dialog not found: {}", tx.original);
-                    // tx.reply(rsip::StatusCode::CallTransactionDoesNotExist)
-                    //     .await?;
+                    tx.reply(rsip::StatusCode::CallTransactionDoesNotExist)
+                        .await?;
                     continue;
                 }
             }
@@ -420,6 +442,8 @@ async fn process_invite(
     let lock = opt.lock().await;
     let rec = lock.rec;
     let echo = lock.echo;
+    let sms = lock.sms;
+    let ai_models = lock.ai_models.clone().unwrap();
 
     tokio::spawn(async move {
         select! {
@@ -435,14 +459,25 @@ async fn process_invite(
                 if echo {
                     play_echo(conn, rtp_token).await.expect("play echo");
                 } else if rec {
-                    let id = utc_time().parse::<usize>().unwrap();
-                    recved_call(&pool, id, caller).await.expect("");
-                    play_audio_file(conn.clone(), rtp_token.clone(), ssrc, "voicemail", peer_addr, payload_type)
+                    let id = utc_time().parse::<i64>().unwrap();
+                    recved_call(&pool, id, caller.clone()).await.expect("");
+                    play_audio_file(conn.clone(), ssrc, "voicemail", peer_addr, payload_type)
                         .await
                         .expect("play example file");
-                    write_pcm(conn, pool, rtp_token, id).await.expect("rec voice");
+                    write_pcm(conn, &pool, rtp_token, id).await.expect("rec voice");
+                    info!("write pcm finished");
+                    if sms {
+                        tokio::spawn(async move {
+                            let txt = speech_to_text::execute(&pool, id, ai_models)
+                                .await.unwrap_or_else(|e| format!("error: {}", e));
+                            info!("{txt}");
+                            notify(&format!("received call from {}\n{}",
+                                        &caller, txt)).await.expect("notify");
+                        });
+                        info!("send sms");
+                    }
                 } else {
-                    play_audio_file(conn, rtp_token, ssrc, "voicemail", peer_addr, payload_type)
+                    play_audio_file(conn, ssrc, "voicemail", peer_addr, payload_type)
                         .await
                         .expect("play example file");
                 }

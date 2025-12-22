@@ -75,7 +75,7 @@ pub async fn build_rtp_conn(
     Ok((conn, sdp))
 }
 
-pub async fn recved_call(pool: &Pool, id: usize, caller: String) -> anyhow::Result<()> {
+pub async fn recved_call(pool: &Pool, id: i64, caller: String) -> anyhow::Result<()> {
     execute(pool, Queries::InsertData(id, caller, vec![0; 300000]))
         .await
         .expect("insert caller");
@@ -84,15 +84,16 @@ pub async fn recved_call(pool: &Pool, id: usize, caller: String) -> anyhow::Resu
 
 pub async fn write_pcm(
     conn: UdpConnection,
-    pool: Pool,
+    pool: &Pool,
     token: CancellationToken,
-    id: usize,
+    id: i64,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let mut n = 0;
     select! {
         _ = token.cancelled() => {
             info!("RTP session cancelled");
+            info!("voice length: {n} {id}");
         }
         _ = async {
             loop {
@@ -125,14 +126,14 @@ pub async fn write_pcm(
                 };
             }
         } => {
-            info!("playback finished, hangup");
+            info!("playback finished, hangup{n}");
         }
     }
 
     let _ = execute(
         &pool,
         Queries::UpdateSampleTime(id,
-        n.checked_div(8).unwrap_or_default()
+            n.checked_div(8).unwrap_or_default()
         )).await.expect("update sample time");
     Ok(())
 }
@@ -169,7 +170,6 @@ pub async fn play_echo(conn: UdpConnection, token: CancellationToken) -> Result<
 
 pub async fn play_audio_file(
     conn: UdpConnection,
-    token: CancellationToken,
     ssrc: u32,
     filename: &str,
     peer_addr: String,
@@ -179,9 +179,6 @@ pub async fn play_audio_file(
     let mut seq = 1;
 
     select! {
-        _ = token.cancelled() => {
-            info!("RTP session cancelled");
-        }
         _ = async {
             let peer_addr = SipAddr{
                 addr: peer_addr.try_into().expect("peer_addr"),
@@ -228,7 +225,7 @@ pub async fn play_audio_file(
                 ticker.tick().await;
             }
         } => {
-            info!("playback finished, hangup");
+            info!("play audio file finished");
         }
     }
     Ok((ts, seq))

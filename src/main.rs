@@ -8,6 +8,8 @@ use rsipstack::Error;
 mod sip;
 mod utils;
 mod web;
+mod sms;
+mod speech_to_text;
 
 #[actix_web::main]
 async fn main() -> Result<()> {
@@ -31,9 +33,8 @@ async fn main() -> Result<()> {
         )
     });
     let pool = Pool::new(manager)?;
-    let poolc = pool.clone();
 
-    let srv = web::server(poolc);
+    let srv = web::server(pool.clone());
     rt::spawn(srv);
     voice_mail(pool).await?;
     Ok(())
@@ -42,7 +43,7 @@ async fn main() -> Result<()> {
 fn subscriber() {
     tracing_subscriber::fmt()
         .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
+        // .with_max_level(tracing::Level::INFO)
         .with_file(true)
         .with_line_number(true)
         .with_timer(tracing_subscriber::fmt::time::LocalTime::rfc_3339())

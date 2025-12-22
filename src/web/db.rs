@@ -13,14 +13,14 @@ type VoicemailResult = Result<Vec<DataType>, rusqlite::Error>;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum DataType {
     VoiceList {
-        id: usize,
+        id: i64,
         event_time: String,
         caller: String,
         tel: String,
         time: u64,
     },
     Data { data: Vec<u8>, },
-    Id { id: usize, },
+    Id { id: i64, },
     BlobSize { offset: u64, },
 }
 
@@ -29,10 +29,11 @@ pub enum Queries {
     AllVoicemail,
     VoiceData(i64),
     DeleteVoicemail(i64),
-    InsertData(usize, String, Vec<u8>),
-    UpdateSampleTime(usize, u64),
+    InsertData(i64, String, Vec<u8>),
+    UpdateSampleTime(i64, u64),
     AddContacts(String, String),
-    DeleteContacts(String)
+    DeleteContacts(String),
+    DeleteBlob(i64),
 }
 
 pub fn all_voicemail(conn: &R2connection) -> VoicemailResult {
@@ -70,10 +71,18 @@ fn del_voicemail(conn: &R2connection, id: i64) -> VoicemailResult {
     all_voicemail(conn)
 }
 
-fn insert_data(conn: &R2connection, id: usize, caller: &str, data: &[u8]) -> VoicemailResult {
+fn del_blob(conn: &R2connection, id: i64) -> VoicemailResult {
+    conn.execute(
+        "UPDATE voicemail SET data = null WHERE id = (?1)",
+        [id],
+    )?;
+    Ok(vec![DataType::Id { id }])
+}
+
+fn insert_data(conn: &R2connection, id: i64, caller: &str, data: &[u8]) -> VoicemailResult {
     conn.execute(
         "INSERT INTO voicemail (id, event_time, caller, data) VALUES (?1, ?2, ?3, ?4)",
-        params![id as i64, format_date(id as i64), caller, data],
+        params![id, format_date(id), caller, data],
     )?;
     Ok(vec![DataType::Id { id }])
 }
@@ -92,7 +101,7 @@ fn update_contacts(conn: &R2connection, caller: &str, name: &str) -> Result<usiz
     )
 }
 
-fn update_sample_time(conn: &R2connection, id: usize, time: u64) -> VoicemailResult {
+fn update_sample_time(conn: &R2connection, id: i64, time: u64) -> VoicemailResult {
     conn.execute(
         "UPDATE voicemail SET time = (?2) WHERE id = (?1)",
         params![id, time],
@@ -120,7 +129,7 @@ fn add_contacts(conn: &R2connection, caller: &str, name: &str) -> VoicemailResul
 
 pub fn append_chunk_blob(
     conn: &R2connection,
-    id: usize,
+    id: i64,
     offset: u64,
     data: &[u8],
 ) -> Result<u64, rusqlite::Error> {
@@ -160,6 +169,8 @@ pub async fn execute(pool: &Pool, query: Queries) -> Result<Vec<DataType>, Error
                 => add_contacts(&conn, &caller, &name),
             Queries::DeleteContacts(caller)
                 => delete_contacts(&conn, &caller),
+            Queries::DeleteBlob(id)
+                => del_blob(&conn, id),
         }
     })
     .await?
@@ -169,7 +180,7 @@ pub async fn execute(pool: &Pool, query: Queries) -> Result<Vec<DataType>, Error
 #[allow(unused)]
 pub fn tx_append_chunk_blob(
     conn: &Transaction,
-    id: usize,
+    id: i64,
     offset: u64,
     data: &[u8],
 ) -> Result<u64, rusqlite::Error> {
@@ -202,7 +213,7 @@ mod tests {
 
         let zero_blob: Vec<u8> = vec![0; 3000000];
         let data = file_open("recv_voice/recv_20250913013410_102.au").expect("file open");
-        let id = utc_time().parse::<usize>().unwrap();
+        let id = utc_time().parse::<i64>().unwrap();
 
         let caller = "test caller".to_string();
 
