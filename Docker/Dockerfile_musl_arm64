@@ -1,10 +1,13 @@
-FROM alpine:3.22
+FROM alpine:3.22 AS builder
+FROM scratch
 ENV TZ=Asia/Tokyo
+ENV SSL_CERT_FILE=/ca-certificates.crt
 WORKDIR /app
-RUN apk add tzdata && ln -s /usr/share/zoneinfo/Asia/Tokyo /etc/localtime && echo "Asia/Tokyo" > /etc/timezone && mkdir /app/database
 
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /
+COPY ./app /
 COPY ./target/aarch64-unknown-linux-musl/release/voicemail /app/
 ADD  ./assets/ /app/assets/
 EXPOSE 8080/tcp
 EXPOSE 5060-5070/udp
-ENTRYPOINT ["/app/voicemail", "--rec", "--sip-server", "172.17.0.4", "--user", "101", "--password", "101"]
+ENTRYPOINT ["/app/voicemail", "--rec", "--sms"]
